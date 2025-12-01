@@ -369,6 +369,25 @@ if __name__ == "__main__":
             except Exception:
                 logger.exception("Failed to set webhook")
 
+        # create an aiohttp web app and add a health endpoint so Render health checks pass
+        try:
+            from aiohttp import web
+        except Exception:
+            web = None
+
+        web_app = None
+        if web is not None:
+            web_app = web.Application()
+
+            async def _health(request):
+                return web.Response(text="OK")
+
+            async def _root(request):
+                return web.Response(text="EAU Confessions Bot")
+
+            web_app.router.add_get('/health', _health)
+            web_app.router.add_get('/', _root)
+
         start_webhook(
             dp,
             webhook_path=WEBHOOK_PATH,
@@ -377,6 +396,7 @@ if __name__ == "__main__":
             on_shutdown=on_shutdown,
             host=WEBAPP_HOST,
             port=WEBAPP_PORT,
+            web_app=web_app,
         )
     else:
         # initialize DB and start long-polling (worker mode)
