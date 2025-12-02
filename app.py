@@ -23,7 +23,6 @@ from aiogram import types
 from aiogram.client.bot import Bot, DefaultBotProperties
 from aiogram import Dispatcher
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Optional dotenv for local development
@@ -159,7 +158,7 @@ def get_top_menu():
     return kb
 
 
-@dp.message.register(Command(commands=["start"]))
+@dp.message.register(lambda m: m.text and m.text.split()[0].lstrip('/').split('@')[0] == 'start')
 async def cmd_start(message: types.Message):
     global BOT_USERNAME
     text = f"Welcome to {CONFESSION_NAME} — send an anonymous confession and I'll post it.\n\n"
@@ -186,7 +185,7 @@ async def cmd_start(message: types.Message):
                 pass
 
 
-@dp.message.register(Command(commands=["help"]))
+@dp.message.register(lambda m: m.text and m.text.split()[0].lstrip('/').split('@')[0] == 'help')
 async def cmd_help(message: types.Message):
     await message.answer("Use the buttons in the channel to interact with confessions.")
 
