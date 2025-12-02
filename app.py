@@ -14,7 +14,7 @@ import asyncio
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Optional dotenv for local development
@@ -175,7 +175,7 @@ async def cmd_help(message: types.Message):
     await message.answer("Use the buttons in the channel to interact with confessions.")
 
 
-@dp.message.register(Text(equals=["📝 Confess", "👀 Browse Confessions"]))
+@dp.message.register(lambda m: m.text in ["📝 Confess", "👀 Browse Confessions"])
 async def top_menu_buttons(message: types.Message):
     if message.text == "📝 Confess":
         await message.answer("Send your confession now.", reply_markup=types.ReplyKeyboardRemove())
@@ -369,7 +369,7 @@ import asyncio
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Optional dotenv for local development
@@ -530,7 +530,7 @@ async def cmd_help(message: types.Message):
     await message.answer("Use the buttons in the channel to interact with confessions.")
 
 
-@dp.message.register(Text(equals=["📝 Confess", "👀 Browse Confessions"]))
+@dp.message.register(lambda m: m.text in ["📝 Confess", "👀 Browse Confessions"])
 async def top_menu_buttons(message: types.Message):
     if message.text == "📝 Confess":
         await message.answer("Send your confession now.", reply_markup=types.ReplyKeyboardRemove())
