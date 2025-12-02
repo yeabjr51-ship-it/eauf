@@ -1,17 +1,19 @@
+# Optional Render service template. Do NOT store secrets here; set env vars in the Render dashboard.
+# Replace `service-name` and other placeholders when creating service via Render or use UI.
 services:
   - type: "web_service"
     name: "eau-confessions-bot"
     env: "python"
     pythonVersion: "3.11.4"
-    plan: "starter"
+    plan: "starter" # choose appropriate plan
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python app.py"
     envVars:
       - key: "API_TOKEN"
-        value: ""
+        value: "" # set in dashboard
       - key: "CHANNEL_ID"
-        value: ""
+        value: "" # set in dashboard (integer; e.g. -100123...)
       - key: "DB_PATH"
         value: "eaubot.db"
       - key: "WEBHOOK_HOST"
-        value: ""
+        value: "" # https://your-service.onrender.com
