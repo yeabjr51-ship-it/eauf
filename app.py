@@ -1,9 +1,10 @@
-"""EAU Confessions Bot - aiogram v3 with optional webhook mode
+"""EAU Confessions Bot - aiogram v3 (clean single-file)
 
-This app supports polling (default) and webhook mode when `WEBHOOK_HOST` is set.
-Webhook mode runs an aiohttp app and forwards POSTed updates to the Dispatcher.
-Configuration is via environment variables. Do NOT store tokens in source.
+This is a cleaned, single-version aiogram v3 application. It supports
+polling (default) and webhook mode when `WEBHOOK_HOST` is set. Configuration
+is via environment variables. Do NOT store tokens in source.
 """
+
 import os
 import logging
 import sqlite3
@@ -12,7 +13,8 @@ import html
 import time
 import asyncio
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Dispatcher, types
+from aiogram.client.bot import Bot, DefaultBotProperties
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -46,34 +48,40 @@ if not API_TOKEN:
     logger.error("API_TOKEN is not set. Set it via environment variable API_TOKEN.")
     raise SystemExit("API_TOKEN not provided")
 
-bot = Bot(token=API_TOKEN, parse_mode="HTML")
+# Use DefaultBotProperties to set default parse_mode (aiogram >=3.7)
+bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 BOT_USERNAME = None
 
+
 # --- Database helpers ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS confessions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        text TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        channel_message_id INTEGER,
-        author_id INTEGER
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS confessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            channel_message_id INTEGER,
+            author_id INTEGER
+        )
+        """
     )
-    """)
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS comments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        confession_id INTEGER NOT NULL,
-        text TEXT NOT NULL,
-        avatar TEXT,
-        timestamp INTEGER NOT NULL
+    c.execute(
+        """
+        CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            confession_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            avatar TEXT,
+            timestamp INTEGER NOT NULL
+        )
+        """
     )
-    """)
     conn.commit()
     conn.close()
 
@@ -95,6 +103,7 @@ def db_execute(query, params=(), fetch=False, many=False):
     conn.commit()
     conn.close()
     return None
+
 
 _last_confession = {}
 _last_comment = {}
@@ -121,7 +130,7 @@ def build_channel_keyboard(conf_id: int, comment_count: int, bot_username: str):
     kb = InlineKeyboardMarkup(row_width=1)
     kb.add(
         InlineKeyboardButton(f"👀 Browse Comments ({comment_count})", url=view_url),
-        InlineKeyboardButton("➕ Add Comment", url=add_url)
+        InlineKeyboardButton("➕ Add Comment", url=add_url),
     )
     return kb
 
@@ -149,7 +158,7 @@ async def cmd_start(message: types.Message):
     text = f"Welcome to {CONFESSION_NAME} — send an anonymous confession and I'll post it.\n\n"
     await message.answer(text, reply_markup=get_top_menu())
 
-    args = message.get_args() if hasattr(message, 'get_args') else None
+    args = message.get_args() if hasattr(message, "get_args") else None
     if args:
         arg = args
         if arg.startswith("view_"):
@@ -184,6 +193,55 @@ async def top_menu_buttons(message: types.Message):
         await message.answer("https://t.me/eauvents")
 
 
+@dp.message.register(state="WAITING_FOR_COMMENT")
+async def process_comment(message: types.Message):
+    data = await dp.storage.get_data(chat=message.chat.id, user=message.from_user.id)
+    confession_id = data.get("confession_id")
+    if not confession_id:
+        await message.reply("Session expired.")
+        await dp.storage.set_state(chat=message.chat.id, user=message.from_user.id, state=None)
+        return
+
+    uid = message.from_user.id
+    now = time.time()
+    last = _last_comment.get(uid, 0)
+    if now - last < COMMENT_COOLDOWN:
+        await message.reply(f"Wait {int(COMMENT_COOLDOWN - (now-last))}s before commenting again.")
+        await dp.storage.set_state(chat=message.chat.id, user=message.from_user.id, state=None)
+        return
+
+    text = message.text.strip() if message.text else ""
+    if not text:
+        await message.reply("Comment canceled.")
+        await dp.storage.set_state(chat=message.chat.id, user=message.from_user.id, state=None)
+        return
+
+    if check_profanity(text):
+        await message.reply("Your comment contains banned words.")
+        await dp.storage.set_state(chat=message.chat.id, user=message.from_user.id, state=None)
+        return
+
+    avatar = random.choice(AVATAR_EMOJIS)
+    ts = int(time.time())
+    db_execute(
+        "INSERT INTO comments (confession_id, text, avatar, timestamp) VALUES (?, ?, ?, ?)",
+        (confession_id, text, avatar, ts),
+    )
+
+    rows = db_execute("SELECT channel_message_id FROM confessions WHERE id=?", (confession_id,), fetch=True)
+    if rows and rows[0][0] and CHANNEL_ID is not None:
+        ch_msg = rows[0][0]
+        cnt = db_execute("SELECT COUNT(*) FROM comments WHERE confession_id=?", (confession_id,), fetch=True)[0][0]
+        try:
+            await bot.edit_message_reply_markup(CHANNEL_ID, ch_msg, reply_markup=build_channel_keyboard(confession_id, cnt, BOT_USERNAME))
+        except Exception:
+            pass
+
+    _last_comment[uid] = now
+    await message.reply("Comment added!")
+    await dp.storage.set_state(chat=message.chat.id, user=message.from_user.id, state=None)
+
+
 @dp.message.register()
 async def receive_confession(message: types.Message):
     # Only accept in private
@@ -200,7 +258,7 @@ async def receive_confession(message: types.Message):
         await message.reply(f"Wait {int(CONFESSION_COOLDOWN - (now-last))}s before sending another confession.")
         return
 
-    text = message.text.strip() if message.text else (message.caption.strip() if getattr(message, 'caption', None) else "")
+    text = message.text.strip() if message.text else (message.caption.strip() if getattr(message, "caption", None) else "")
     if not text:
         await message.reply("Empty confession.")
         return
@@ -217,11 +275,7 @@ async def receive_confession(message: types.Message):
         await message.reply("Channel ID not configured on server. Confession saved locally.")
     else:
         try:
-            sent = await bot.send_message(
-                CHANNEL_ID,
-                formatted,
-                reply_markup=build_channel_keyboard(conf_id, 0, BOT_USERNAME)
-            )
+            sent = await bot.send_message(CHANNEL_ID, formatted, reply_markup=build_channel_keyboard(conf_id, 0, BOT_USERNAME))
             db_execute("UPDATE confessions SET channel_message_id=? WHERE id=?", (sent.message_id, conf_id))
         except Exception:
             logger.exception("Failed to post confession to channel")
@@ -254,7 +308,9 @@ async def send_comments_page(chat_id: int, confession_id: int, page: int = 1, ed
 
     rows = db_execute(
         "SELECT id, text, avatar, timestamp FROM comments WHERE confession_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
-        (confession_id, PAGE_SIZE, offset), fetch=True)
+        (confession_id, PAGE_SIZE, offset),
+        fetch=True,
+    )
 
     body = f"👀 <b>{CONFESSION_NAME} #{confession_id}</b>\n\n{html.escape(conf_text)}\n\n"
     body += f"💬 Comments (page {page}/{total_pages}):\n\n"
@@ -285,6 +341,61 @@ async def _start_polling():
     await dp.start_polling(bot)
 
 
+def _build_webhook_app():
+    try:
+        from aiohttp import web
+    except Exception:
+        return None, None
+
+    async def _on_startup(app):
+        init_db()
+        me = await bot.get_me()
+        global BOT_USERNAME
+        BOT_USERNAME = me.username
+        logger.info("Bot started (webhook mode)")
+        if WEBHOOK_URL:
+            try:
+                await bot.set_webhook(WEBHOOK_URL)
+                logger.info(f"Webhook set to {WEBHOOK_URL}")
+            except Exception:
+                logger.exception("Failed to set webhook")
+
+    async def _on_shutdown(app):
+        try:
+            await bot.delete_webhook()
+        except Exception:
+            pass
+        try:
+            await dp.storage.close()
+        except Exception:
+            pass
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
+
+    async def handle_webhook(request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(status=400, text="invalid json")
+        try:
+            update = types.Update(**data)
+            await dp.process_update(update)
+        except Exception:
+            logger.exception("Failed to process update")
+            return web.Response(status=500, text="error")
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.router.add_get("/health", lambda request: web.Response(text="OK"))
+    app.router.add_get("/", lambda request: web.Response(text="EAU Confessions Bot"))
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_shutdown)
+    return app, web
+
+
 if __name__ == "__main__":
     # Webhook configuration
     WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # e.g. https://your-service.onrender.com
@@ -295,62 +406,10 @@ if __name__ == "__main__":
     USE_WEBHOOK = bool(WEBHOOK_HOST)
 
     if USE_WEBHOOK:
-        try:
-            from aiohttp import web
-        except Exception:
-            web = None
-
-        async def _on_startup(app):
-            init_db()
-            me = await bot.get_me()
-            global BOT_USERNAME
-            BOT_USERNAME = me.username
-            logger.info("Bot started (webhook mode)")
-            if WEBHOOK_URL:
-                try:
-                    await bot.set_webhook(WEBHOOK_URL)
-                    logger.info(f"Webhook set to {WEBHOOK_URL}")
-                except Exception:
-                    logger.exception("Failed to set webhook")
-
-        async def _on_shutdown(app):
-            try:
-                await bot.delete_webhook()
-            except Exception:
-                pass
-            try:
-                await dp.storage.close()
-            except Exception:
-                pass
-            try:
-                await bot.session.close()
-            except Exception:
-                pass
-
-        async def handle_webhook(request):
-            try:
-                data = await request.json()
-            except Exception:
-                return web.Response(status=400, text="invalid json")
-            try:
-                update = types.Update(**data)
-                await dp.process_update(update)
-            except Exception:
-                logger.exception("Failed to process update")
-                return web.Response(status=500, text="error")
-            return web.Response(text="OK")
-
-        if web is None:
+        app, web = _build_webhook_app()
+        if app is None:
             logger.error("aiohttp not available; cannot start webhook server")
             raise SystemExit("aiohttp dependency missing")
-
-        app = web.Application()
-        app.router.add_post(WEBHOOK_PATH, handle_webhook)
-        app.router.add_get('/health', lambda request: web.Response(text='OK'))
-        app.router.add_get('/', lambda request: web.Response(text='EAU Confessions Bot'))
-        app.on_startup.append(_on_startup)
-        app.on_cleanup.append(_on_shutdown)
-
         web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
     else:
         asyncio.run(_start_polling())
