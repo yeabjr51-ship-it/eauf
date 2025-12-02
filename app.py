@@ -1,4 +1,4 @@
-# App entrypoint for EAU Confessions Bot (aiogram v2)
+# App entrypoint for EAU Confessions Bot (aiogram v3)
 # Reads configuration from environment variables for Render deployment
 import os
 import logging
@@ -6,14 +6,14 @@ import sqlite3
 import random
 import html
 import time
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ParseMode, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+import asyncio
 
-# Load .env locally if available (optional)
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import Command, Text
+from aiogram.fsm.storage.memory import MemoryStorage
+
+# Optional dotenv for local development
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -32,7 +32,6 @@ DB_PATH = os.getenv("DB_PATH", "eaubot.db")
 CONFESSION_NAME = os.getenv("CONFESSION_NAME", "EAU Confession")
 CONFESSION_COOLDOWN = int(os.getenv("CONFESSION_COOLDOWN", "30"))
 COMMENT_COOLDOWN = int(os.getenv("COMMENT_COOLDOWN", "10"))
-
 BAD_WORDS = set(filter(None, map(str.strip, os.getenv("BAD_WORDS", "badword1,badword2,fuck,shit,bitch,asshole").split(','))))
 AVATAR_EMOJIS = ["🗿","👤","👽","🤖","👻","🦊","🐼","🐵","🐥","🦄","😺","😎","🫥","🪄","🧋"]
 
@@ -43,14 +42,13 @@ if not API_TOKEN:
     logger.error("API_TOKEN is not set. Set it via environment variable API_TOKEN.")
     raise SystemExit("API_TOKEN not provided")
 
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=API_TOKEN, parse_mode="HTML")
 storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(storage=storage)
 
 BOT_USERNAME = None
 
-# Database helpers
-
+# --- Database helpers ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -97,11 +95,6 @@ def db_execute(query, params=(), fetch=False, many=False):
 _last_confession = {}
 _last_comment = {}
 
-class AddCommentState(StatesGroup):
-    waiting_for_comment = State()
-
-# ---------- Helpers ----------
-
 def check_profanity(text: str) -> bool:
     t = text.lower()
     for w in BAD_WORDS:
@@ -111,11 +104,9 @@ def check_profanity(text: str) -> bool:
             return True
     return False
 
-
 def format_confession_message(conf_id: int, text: str) -> str:
     t = html.escape(text)
     return f"👀 <b>{CONFESSION_NAME} #{conf_id}</b>\n\n{t}\n\n#Other"
-
 
 def build_channel_keyboard(conf_id: int, comment_count: int, bot_username: str):
     view_url = f"https://t.me/{bot_username}?start=view_{conf_id}"
@@ -127,7 +118,6 @@ def build_channel_keyboard(conf_id: int, comment_count: int, bot_username: str):
     )
     return kb
 
-
 def build_comment_page_keyboard(conf_id: int, page: int, total_pages: int):
     kb = InlineKeyboardMarkup(row_width=2)
     if page > 1:
@@ -137,45 +127,46 @@ def build_comment_page_keyboard(conf_id: int, page: int, total_pages: int):
     kb.add(InlineKeyboardButton("➕ Add Comment", url=f"https://t.me/{BOT_USERNAME}?start=add_{conf_id}"))
     return kb
 
-# ---------- Top Menu ----------
-
 def get_top_menu():
     kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     kb.add(KeyboardButton("📝 Confess"))
     kb.add(KeyboardButton("👀 Browse Confessions"))
     return kb
 
-@dp.message_handler(commands=["start"])
+
+@dp.message.register(Command("start"))
 async def cmd_start(message: types.Message):
     global BOT_USERNAME
     text = f"Welcome to {CONFESSION_NAME} — send an anonymous confession and I'll post it.\n\n"
     await message.answer(text, reply_markup=get_top_menu())
 
-    if message.get_args():
-        arg = message.get_args()
+    args = message.get_args() if hasattr(message, 'get_args') else None
+    if args:
+        arg = args
         if arg.startswith("view_"):
             try:
-                conf_id = int(arg.split("_",1)[1])
+                conf_id = int(arg.split("_", 1)[1])
                 await send_comments_page(message.chat.id, conf_id, page=1, edit_message_id=None)
                 return
             except Exception:
                 pass
         if arg.startswith("add_"):
             try:
-                conf_id = int(arg.split("_",1)[1])
+                conf_id = int(arg.split("_", 1)[1])
                 await message.answer("Send your comment:")
-                state = dp.current_state(chat=message.chat.id, user=message.from_user.id)
-                await state.update_data(confession_id=conf_id)
-                await AddCommentState.waiting_for_comment.set()
+                await dp.storage.set_data(chat=message.chat.id, user=message.from_user.id, data={"confession_id": conf_id})
+                await dp.storage.set_state(chat=message.chat.id, user=message.from_user.id, state="WAITING_FOR_COMMENT")
                 return
             except Exception:
                 pass
 
-@dp.message_handler(commands=["help"])
+
+@dp.message.register(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer("Use the buttons in the channel to interact with confessions.")
 
-@dp.message_handler(lambda m: m.text in ["📝 Confess", "👀 Browse Confessions"])
+
+@dp.message.register(Text(equals=["📝 Confess", "👀 Browse Confessions"]))
 async def top_menu_buttons(message: types.Message):
     if message.text == "📝 Confess":
         await message.answer("Send your confession now.", reply_markup=types.ReplyKeyboardRemove())
@@ -183,10 +174,16 @@ async def top_menu_buttons(message: types.Message):
         await message.answer("Browse confessions:", reply_markup=types.ReplyKeyboardRemove())
         await message.answer("https://t.me/eauvents")
 
-@dp.message_handler()
+
+@dp.message.register()
 async def receive_confession(message: types.Message):
-    if message.chat.type != "private":
-        return
+    # Only accept in private
+    try:
+        if message.chat.type != "private":
+            return
+    except Exception:
+        pass
+
     uid = message.from_user.id
     now = time.time()
     last = _last_confession.get(uid, 0)
@@ -194,7 +191,7 @@ async def receive_confession(message: types.Message):
         await message.reply(f"Wait {int(CONFESSION_COOLDOWN - (now-last))}s before sending another confession.")
         return
 
-    text = message.text.strip() if message.text else (message.caption.strip() if message.caption else "")
+    text = message.text.strip() if message.text else (message.caption.strip() if getattr(message, 'caption', None) else "")
     if not text:
         await message.reply("Empty confession.")
         return
@@ -214,11 +211,10 @@ async def receive_confession(message: types.Message):
             sent = await bot.send_message(
                 CHANNEL_ID,
                 formatted,
-                parse_mode=ParseMode.HTML,
                 reply_markup=build_channel_keyboard(conf_id, 0, BOT_USERNAME)
             )
             db_execute("UPDATE confessions SET channel_message_id=? WHERE id=?", (sent.message_id, conf_id))
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to post confession to channel")
             await message.reply("Bot cannot post in channel.")
             return
@@ -226,59 +222,14 @@ async def receive_confession(message: types.Message):
     _last_confession[uid] = now
     await message.reply(f"Posted as {CONFESSION_NAME} #{conf_id}")
 
-# ---------- Add Comment ----------
-@dp.message_handler(state=AddCommentState.waiting_for_comment)
-async def process_comment(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    confession_id = data.get("confession_id")
-    if not confession_id:
-        await message.reply("Session expired.")
-        await state.finish()
-        return
 
-    uid = message.from_user.id
-    now = time.time()
-    last = _last_comment.get(uid, 0)
-    if now - last < COMMENT_COOLDOWN:
-        await message.reply(f"Wait {int(COMMENT_COOLDOWN - (now-last))}s before commenting again.")
-        await state.finish()
-        return
+@dp.callback_query.register(lambda c: c.data and c.data.startswith("page:"))
+async def callback_page(callback: types.CallbackQuery):
+    await callback.answer()
+    _, conf, pg = callback.data.split(":")
+    await send_comments_page(callback.from_user.id, int(conf), int(pg), edit_message_id=callback.message.message_id)
 
-    text = message.text.strip()
-    if not text:
-        await message.reply("Comment canceled.")
-        await state.finish()
-        return
 
-    if check_profanity(text):
-        await message.reply("Your comment contains banned words.")
-        await state.finish()
-        return
-
-    avatar = random.choice(AVATAR_EMOJIS)
-    ts = int(time.time())
-    db_execute(
-        "INSERT INTO comments (confession_id, text, avatar, timestamp) VALUES (?, ?, ?, ?)",
-        (confession_id, text, avatar, ts)
-    )
-
-    rows = db_execute("SELECT channel_message_id FROM confessions WHERE id=?", (confession_id,), fetch=True)
-    if rows and rows[0][0] and CHANNEL_ID is not None:
-        ch_msg = rows[0][0]
-        cnt = db_execute("SELECT COUNT(*) FROM comments WHERE confession_id=?", (confession_id,), fetch=True)[0][0]
-        try:
-            await bot.edit_message_reply_markup(
-                CHANNEL_ID, ch_msg,
-                reply_markup=build_channel_keyboard(confession_id, cnt, BOT_USERNAME)
-            )
-        except Exception:
-            pass
-
-    _last_comment[uid] = now
-    await message.reply("Comment added!")
-    await state.finish()
-
-# ---------- View Comments ----------
 async def send_comments_page(chat_id: int, confession_id: int, page: int = 1, edit_message_id: int = None):
     PAGE_SIZE = 4
     conf = db_execute("SELECT id, text FROM confessions WHERE id=?", (confession_id,), fetch=True)
@@ -308,97 +259,25 @@ async def send_comments_page(chat_id: int, confession_id: int, page: int = 1, ed
 
     if edit_message_id:
         try:
-            await bot.edit_message_text(body, chat_id, edit_message_id, parse_mode=ParseMode.HTML, reply_markup=kb)
+            await bot.edit_message_text(body, chat_id, edit_message_id, reply_markup=kb)
             return
         except Exception:
             pass
 
-    await bot.send_message(chat_id, body, parse_mode=ParseMode.HTML, reply_markup=kb)
+    await bot.send_message(chat_id, body, reply_markup=kb)
 
-# ---------- Callback Page ----------
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith("page:"))
-async def callback_page(call: types.CallbackQuery):
-    await call.answer()
-    _, conf, pg = call.data.split(":")
-    await send_comments_page(call.from_user.id, int(conf), int(pg), edit_message_id=call.message.message_id)
 
-# ---------- Startup ----------
-async def on_startup(dp_local):
-    global BOT_USERNAME
+async def main():
+    # init DB and bot username
     init_db()
     me = await bot.get_me()
+    global BOT_USERNAME
     BOT_USERNAME = me.username
-    logger.info("Bot started")
+    logger.info("Bot started (aiogram v3)")
 
-# Webhook configuration (use WEBHOOK_HOST to enable webhooks)
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # e.g. https://your-service.onrender.com
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH") or f"/webhook/{API_TOKEN.split(':')[0]}"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}" if WEBHOOK_HOST else None
-WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.getenv("PORT", "8000"))
-USE_WEBHOOK = bool(WEBHOOK_HOST)
-
-
-async def on_shutdown(dp_local):
-    try:
-        await bot.delete_webhook()
-    except Exception:
-        pass
-    try:
-        await dp_local.storage.close()
-    except Exception:
-        pass
+    # start polling
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    if USE_WEBHOOK:
-        # Run as a web service using aiogram's start_webhook (requires WEBHOOK_HOST to be a HTTPS URL)
-        from aiogram.utils.executor import start_webhook
-
-        if not WEBHOOK_URL:
-            logger.error("WEBHOOK_HOST was provided but WEBHOOK_URL could not be constructed.")
-            raise SystemExit("Invalid WEBHOOK configuration")
-
-        # on_startup will initialize DB and set BOT_USERNAME
-        async def _on_startup(dp_local):
-            await on_startup(dp_local)
-            # set webhook to receive updates
-            try:
-                await bot.set_webhook(WEBHOOK_URL)
-                logger.info(f"Webhook set to {WEBHOOK_URL}")
-            except Exception:
-                logger.exception("Failed to set webhook")
-
-        # create an aiohttp web app and add a health endpoint so Render health checks pass
-        try:
-            from aiohttp import web
-        except Exception:
-            web = None
-
-        web_app = None
-        if web is not None:
-            web_app = web.Application()
-
-            async def _health(request):
-                return web.Response(text="OK")
-
-            async def _root(request):
-                return web.Response(text="EAU Confessions Bot")
-
-            web_app.router.add_get('/health', _health)
-            web_app.router.add_get('/', _root)
-
-        start_webhook(
-            dp,
-            webhook_path=WEBHOOK_PATH,
-            skip_updates=True,
-            on_startup=_on_startup,
-            on_shutdown=on_shutdown,
-            host=WEBAPP_HOST,
-            port=WEBAPP_PORT,
-            web_app=web_app,
-        )
-    else:
-        # initialize DB and start long-polling (worker mode)
-        init_db()
-        executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    asyncio.run(main())
