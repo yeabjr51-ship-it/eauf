@@ -1,5 +1,4 @@
 # Optional Render service template. Do NOT store secrets here; set env vars in the Render dashboard.
-# Replace `service-name` and other placeholders when creating service via Render or use UI.
 services:
   - type: "web_service"
     name: "eau-confessions-bot"
